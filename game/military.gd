@@ -1123,3 +1123,60 @@ func load_state(d: Dictionary) -> void :
 		if (f.kind == Facility.Kind.POWER_PLANT or f.kind == Facility.Kind.REFINERY or f.kind == Facility.Kind.NUCLEAR_PLANT) and alive(f):
 			_ambient_fx(f)
 	forts_changed.emit()
+
+# >>> PERF_PATCH_V1 (military)
+const DEAD_FAC_KEEP_S: float = 600.0
+const FAC_PRUNE_DT: float = 30.0
+const FAC_PRUNE_MAX: int = 64
+var _fac_prune_t: float = 0.0
+
+func prune_dead_facilities(dt: float) -> void:
+	if gw.net_driven or gw.net_sim or gw.net_tick > 0:
+		return
+	_fac_prune_t += dt
+	if _fac_prune_t < FAC_PRUNE_DT or facilities.size() < 64:
+		return
+	_fac_prune_t = 0.0
+	var now: float = gw.game_time
+	var used: Dictionary = {}
+	for f0: Facility in facilities:
+		if f0.parent != null:
+			used[f0.parent.id] = true
+	for u: Unit in gw.army.units:
+		if u.home != null:
+			used[u.home.id] = true
+		if u.post != null:
+			used[u.post.id] = true
+	for c: Country in gw.countries:
+		for g: Dictionary in c.army_groups:
+			for fid: int in g["fids"]:
+				used[int(fid)] = true
+	if gw.ops != null:
+		for k: Variant in gw.ops.list:
+			if k is Facility:
+				used[(k as Facility).id] = true
+	if gw.army.tac != null:
+		for k: Variant in gw.army.tac.ops:
+			if k is Facility:
+				used[(k as Facility).id] = true
+	var sel: Variant = gw.get("selected_facility")
+	if sel is Facility:
+		used[(sel as Facility).id] = true
+	var removed: int = 0
+	for i in range(facilities.size() - 1, -1, -1):
+		if removed >= FAC_PRUNE_MAX:
+			break
+		var f: Facility = facilities[i]
+		if alive(f) or f.parent != null:
+			continue
+		if f.kind == Facility.Kind.DRONE_PORT or f.kind == Facility.Kind.NAVAL_BASE:
+			continue
+		if f.ruined_at < 0.0 or now - f.ruined_at < DEAD_FAC_KEEP_S:
+			continue
+		if f.restore_t > 0.0 or used.has(f.id):
+			continue
+		facilities.remove_at(i)
+		removed += 1
+	if removed > 0:
+		forts_changed.emit()
+# <<< PERF_PATCH_V1

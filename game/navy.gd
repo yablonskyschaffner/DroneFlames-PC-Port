@@ -541,13 +541,13 @@ static func is_base(f: Facility) -> bool:
 
 
 func bases_of(cid: int, alive_only: bool = true) -> Array[Facility]:
+	# PERF_PATCH_V1: кэш морбаз на шаг симуляции
+	_bases_cache()
 	var out: Array[Facility] = []
-	for f: Facility in gw.mil.facilities:
-		if f.kind == Facility.Kind.NAVAL_BASE and f.country_id == cid and ( not alive_only or gw.mil.alive(f)):
+	for f: Facility in (_bases_c.get(cid, []) as Array):
+		if not alive_only or gw.mil.alive(f):
 			out.append(f)
 	return out
-
-
 func berth_q(f: Facility) -> Vector2i:
 	if not _berth.has(f):
 		var pr: Ports = _ports()
@@ -917,6 +917,7 @@ func spawn_ship(f: Facility, hull: int, mods: Array) -> Ship:
 	s.think_t = float(s.id % 5) * 0.1
 	s.fresh = true
 	ships.append(s)
+	_ship_idx[s.id] = s
 	stats["built"] = int(stats["built"]) + 1
 	_ev({"k": "built", "ship": s.id, "c": s.c, "pos": s.pos})
 	var c: Country = gw.country_by_id(s.c)
@@ -1430,6 +1431,7 @@ func update(dt: float) -> void :
 				slicks.append([s.pos, now + SLICK_T])
 				if gw._on_screen(s.pos, 40.0):
 					gw.fx.spawn("splash", s.pos.round(), 6)
+				_ship_idx.erase(s.id)
 				ships.remove_at(k)
 			continue
 		_move(s, dt)
@@ -1491,12 +1493,12 @@ func update(dt: float) -> void :
 
 
 func ship(id: int) -> Ship:
-	for s: Ship in ships:
-		if s.id == id:
-			return s
-	return null
-
-
+	# PERF_PATCH_V1: индекс кораблей по id
+	if _ship_idx.size() != ships.size():
+		_ship_idx.clear()
+		for s0: Ship in ships:
+			_ship_idx[s0.id] = s0
+	return _ship_idx.get(id) as Ship
 func ships_of(cid: int, alive_only: bool = true) -> Array[Ship]:
 	var out: Array[Ship] = []
 	for s: Ship in ships:
@@ -3013,6 +3015,7 @@ func save_state() -> Dictionary:
 
 func load_state(d: Dictionary) -> void :
 	ships.clear()
+	_ship_idx.clear()
 	for sd: Variant in d.get("ships", []):
 		if sd is Dictionary:
 			var s: Ship = Ship.from_dict(sd)
@@ -3062,3 +3065,24 @@ func load_state(d: Dictionary) -> void :
 			dst[int(k4)] = (src[k4] as Array).duplicate() if src[k4] is Array else src[k4]
 		set("_" + k3, dst)
 	_track_bases()
+
+# >>> PERF_PATCH_V1 (navy)
+var _ship_idx: Dictionary = {}
+var _bases_c: Dictionary = {}
+var _bases_t: float = -1.0
+var _bases_n: int = -1
+
+func _bases_cache() -> void:
+	var n: int = gw.mil.facilities.size()
+	if _bases_t == gw.game_time and _bases_n == n:
+		return
+	_bases_t = gw.game_time
+	_bases_n = n
+	_bases_c.clear()
+	for f: Facility in gw.mil.facilities:
+		if f.kind != Facility.Kind.NAVAL_BASE:
+			continue
+		if not _bases_c.has(f.country_id):
+			_bases_c[f.country_id] = []
+		(_bases_c[f.country_id] as Array).append(f)
+# <<< PERF_PATCH_V1

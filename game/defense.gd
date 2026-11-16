@@ -126,8 +126,6 @@ var shots: Array = []
 var _id: int = 1
 var _scan: float = 0.0
 var _anim: float = 0.0
-var _radar_c: Dictionary = {}
-var _radar_t: float = -1.0
 
 
 func _init(world: GameWorld) -> void :
@@ -142,21 +140,8 @@ func _ready(f: Facility) -> bool:
 	return gw.mil.alive(f) and not f.moving and not f.mb
 
 
-func _radar_cache() -> void:
-	if _radar_t == gw.game_time:
-		return
-	_radar_t = gw.game_time
-	_radar_c.clear()
-	for f: Facility in gw.mil.facilities:
-		if f.kind != Facility.Kind.AD_RADAR:
-			continue
-		var a: Array = _radar_c.get(f.country_id, [])
-		if a.is_empty():
-			_radar_c[f.country_id] = a
-		a.append(f)
-
-
 func covered(country_id: int, p: Vector2) -> bool:
+	# PERF_PATCH_V1: кэш радаров на шаг симуляции
 	_radar_cache()
 	var r2: float = RADAR_R * RADAR_R
 	for k: Variant in _radar_c:
@@ -167,8 +152,6 @@ func covered(country_id: int, p: Vector2) -> bool:
 			if _ready(f) and gw.mil.has_power(f) and f.center_px().distance_squared_to(p) <= r2:
 				return true
 	return false
-
-
 func _hostile(a: int, b: int) -> bool:
 	if a == b:
 		return false
@@ -890,3 +873,23 @@ func spend_min(c: Country) -> Dictionary:
 	for kind: int in AD_CLASSES:
 		out["by_class"][kind] = roundi(float(by.get(String(CLASS_KEY[kind]), 0)) * k)
 	return out
+
+# >>> PERF_PATCH_V1 (defense)
+var _radar_c: Dictionary = {}
+var _radar_t: float = -1.0
+var _radar_n: int = -1
+
+func _radar_cache() -> void:
+	var n: int = gw.mil.facilities.size()
+	if _radar_t == gw.game_time and _radar_n == n:
+		return
+	_radar_t = gw.game_time
+	_radar_n = n
+	_radar_c.clear()
+	for f: Facility in gw.mil.facilities:
+		if f.kind != Facility.Kind.AD_RADAR:
+			continue
+		if not _radar_c.has(f.country_id):
+			_radar_c[f.country_id] = []
+		(_radar_c[f.country_id] as Array).append(f)
+# <<< PERF_PATCH_V1

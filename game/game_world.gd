@@ -341,9 +341,9 @@ func cmd_refill_all(c: Country, on: bool) -> int:
 
 func net_step(dt: float) -> void :
 	net_tick += 1
-	rng.log_on = true
+	rng.log_on = NetConfig.trace
 	rng.log_tick = net_tick
-	Country.mlog_on = true
+	Country.mlog_on = NetConfig.trace
 	Country.mlog_tick = net_tick
 	_sim_step(dt)
 	if strike_net != null:
@@ -449,6 +449,7 @@ func _sim_step(dt: float) -> void :
 		if perf_prof:
 			_pf("_update_bridges")
 		mil.update(dt)
+		mil.prune_dead_facilities(dt)
 		if perf_prof:
 			_pf("mil.update")
 		diplo.update(dt)
@@ -484,7 +485,13 @@ func _sim_step(dt: float) -> void :
 		session.update(dt)
 		if perf_prof:
 			_pf("session.update")
-		ai.update(dt)
+		if net_driven or net_sim or net_tick > 0:
+			ai.update(dt)
+		else:
+			_ai_th_acc += dt
+			if _ai_th_acc >= 0.4:
+				ai.update(_ai_th_acc)
+				_ai_th_acc = 0.0
 		if perf_prof:
 			_pf("ai.update")
 		if ops != null:
@@ -557,3 +564,7 @@ func cell_at_screen(screen_pos: Vector2) -> Vector2i:
 		var wp: Vector2 = camera.screen_to_world(screen_pos)
 		return Vector2i(floori(wp.x / float(CELL)), floori(wp.y / float(CELL)))
 	return Vector2i(floori(screen_pos.x / float(CELL)), floori(screen_pos.y / float(CELL)))
+
+# >>> PERF_PATCH_V1 (world)
+var _ai_th_acc: float = 0.0
+# <<< PERF_PATCH_V1

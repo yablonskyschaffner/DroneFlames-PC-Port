@@ -154,6 +154,8 @@ func idle_units(country_id: int) -> Array[Unit]:
 
 func _train(dt: float) -> void :
 	var mil: Military = gw.mil
+	_tr_on = true
+	_tr_built = false
 	var counts: Dictionary = {}
 	var counted: bool = false
 	for f: Facility in mil.facilities:
@@ -169,9 +171,9 @@ func _train(dt: float) -> void :
 		if not f.producing:
 			if not counted:
 				counted = true
-				for u: Unit in units:
-					if u.home != null and u.alive() and u.type != Unit.Type.FPV:
-						counts[u.home] = int(counts.get(u.home, 0)) + 1
+				_tr_ensure()
+				for h: Variant in _tr_home:
+					counts[h] = (_tr_home[h] as Array).size()
 				if gw.naval != null:
 					gw.naval.add_counts(counts)
 			var n: int = int(counts.get(f, 0))
@@ -195,7 +197,8 @@ func _train(dt: float) -> void :
 				t = t2
 				cost = unit_cost(t)
 
-			var buf: int = food_buffer(c)
+			_tr_ensure()
+			var buf: int = (int(_tr_ctry.get(c.id, 0)) + 3) / 3 * 3
 			if gw.econ != null:
 				buf = mini(buf, gw.econ.res_cap(c, "food") / 2)
 			if c.food < buf + int(cost.get("food", 0)):
@@ -214,6 +217,7 @@ func _train(dt: float) -> void :
 			f.producing = false
 			f.prod_t = 0.0
 			_spawn(f, tt)
+	_tr_on = false
 
 
 func _next_type(f: Facility) -> int:
@@ -229,14 +233,19 @@ func _next_type(f: Facility) -> int:
 	var tanks: int = 0
 	var inf: int = 0
 	var atgm: int = 0
-	for u: Unit in units:
-		if u.home == f and u.alive():
-			if u.type == Unit.Type.TANK:
-				tanks += 1
-			elif u.type == Unit.Type.INFANTRY:
-				inf += 1
-			elif u.type == Unit.Type.ATGM:
-				atgm += 1
+	var list: Array = units
+	if _tr_on:
+		_tr_ensure()
+		list = _tr_home.get(f, []) as Array
+	for u: Unit in list:
+		if not _tr_on and (u.home != f or not u.alive()):
+			continue
+		if u.type == Unit.Type.TANK:
+			tanks += 1
+		elif u.type == Unit.Type.INFANTRY:
+			inf += 1
+		elif u.type == Unit.Type.ATGM:
+			atgm += 1
 
 	if atgm * 2 < inf - 1:
 		return Unit.Type.ATGM
@@ -273,6 +282,12 @@ func _spawn(f: Facility, t: int) -> Unit:
 	u.pi = 0
 	u.state = Unit.State.MOVE
 	units.append(u)
+	if _tr_on and _tr_built and u.type != Unit.Type.FPV:
+		_tr_ctry[u.country_id] = int(_tr_ctry.get(u.country_id, 0)) + 1
+		if u.home != null:
+			if not _tr_home.has(u.home):
+				_tr_home[u.home] = []
+			(_tr_home[u.home] as Array).append(u)
 	if gw.country_by_id(f.country_id).is_player and gw._on_screen(u.pos, 40.0):
 		gw.fx.spawn("dust_s", u.pos.round(), 5)
 	return u
@@ -1728,17 +1743,22 @@ func _ensure_build(f: Facility, c: Country) -> void :
 
 
 func _have(f: Facility) -> Dictionary:
+	# PERF_PATCH_V1: из кэша _train, иначе полный перебор
 	var have: Dictionary = {}
-	for u: Unit in units:
-		if u.home == f and u.alive() and u.type != Unit.Type.FPV:
-			have[u.type] = int(have.get(u.type, 0)) + 1
+	var src: Array = []
+	if _tr_on:
+		_tr_ensure()
+		src = _tr_home.get(f, []) as Array
+	else:
+		for u: Unit in units:
+			if u.home == f and u.alive() and u.type != Unit.Type.FPV:
+				src.append(u)
+	for u2: Unit in src:
+		have[u2.type] = int(have.get(u2.type, 0)) + 1
 	if gw.naval != null:
-		for u2: Unit in gw.naval.aboard_of(f):
-			have[u2.type] = int(have.get(u2.type, 0)) + 1
+		for u3: Unit in gw.naval.aboard_of(f):
+			have[u3.type] = int(have.get(u3.type, 0)) + 1
 	return have
-
-
-
 func _shortage(f: Facility) -> Array:
 	var have: Dictionary = _have(f)
 	var out: Array = []
@@ -2723,3 +2743,28 @@ func on_barracks_captured(bars: Array, old_id: int, new_id: int) -> int:
 
 func _guard_foe(u: Unit, o: Unit) -> bool:
 	return gw.diplo != null and gw.diplo.rq != null and gw.diplo.rq.guard_hit(u.country_id, o.country_id, u.pos, o.pos)
+
+# >>> PERF_PATCH_V1 (army)
+var _tr_on: bool = false
+var _tr_built: bool = false
+var _tr_home: Dictionary = {}
+var _tr_ctry: Dictionary = {}
+
+func _tr_ensure() -> void:
+	if _tr_built:
+		return
+	_tr_built = true
+	_tr_home.clear()
+	_tr_ctry.clear()
+	for u: Unit in units:
+		if not u.alive() or u.type == Unit.Type.FPV:
+			continue
+		_tr_ctry[u.country_id] = int(_tr_ctry.get(u.country_id, 0)) + 1
+		if u.home != null:
+			if not _tr_home.has(u.home):
+				_tr_home[u.home] = []
+			(_tr_home[u.home] as Array).append(u)
+	if gw.naval != null:
+		for c0: Country in gw.countries:
+			_tr_ctry[c0.id] = int(_tr_ctry.get(c0.id, 0)) + gw.naval.aboard_n(c0.id)
+# <<< PERF_PATCH_V1
