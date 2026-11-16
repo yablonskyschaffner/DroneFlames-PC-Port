@@ -126,6 +126,8 @@ var shots: Array = []
 var _id: int = 1
 var _scan: float = 0.0
 var _anim: float = 0.0
+var _radar_c: Dictionary = {}
+var _radar_t: float = -1.0
 
 
 func _init(world: GameWorld) -> void :
@@ -140,10 +142,29 @@ func _ready(f: Facility) -> bool:
 	return gw.mil.alive(f) and not f.moving and not f.mb
 
 
-func covered(country_id: int, p: Vector2) -> bool:
+func _radar_cache() -> void:
+	if _radar_t == gw.game_time:
+		return
+	_radar_t = gw.game_time
+	_radar_c.clear()
 	for f: Facility in gw.mil.facilities:
-		if f.kind == Facility.Kind.AD_RADAR and _ready(f) and (f.country_id == country_id or gw.diplo.allied(f.country_id, country_id)) and gw.mil.has_power(f):
-			if f.center_px().distance_squared_to(p) <= RADAR_R * RADAR_R:
+		if f.kind != Facility.Kind.AD_RADAR:
+			continue
+		var a: Array = _radar_c.get(f.country_id, [])
+		if a.is_empty():
+			_radar_c[f.country_id] = a
+		a.append(f)
+
+
+func covered(country_id: int, p: Vector2) -> bool:
+	_radar_cache()
+	var r2: float = RADAR_R * RADAR_R
+	for k: Variant in _radar_c:
+		var cid: int = int(k)
+		if cid != country_id and not gw.diplo.allied(cid, country_id):
+			continue
+		for f: Facility in (_radar_c[k] as Array):
+			if _ready(f) and gw.mil.has_power(f) and f.center_px().distance_squared_to(p) <= r2:
 				return true
 	return false
 
