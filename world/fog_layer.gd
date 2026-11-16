@@ -12,6 +12,11 @@ var _icons: Dictionary = {}
 var cover: bool = false
 var _cover_ver: int = -1
 var _src: Dictionary = {}
+# >>> PERF_PATCH_V2: перерисовка покрытия не чаще COVER_MIN_DT реальных секунд
+const COVER_MIN_DT: float = 0.25
+var _cover_t: float = 0.0
+var _cover_pending: bool = false
+# <<< PERF_PATCH_V2
 
 const ICON: Dictionary = {
 	Facility.Kind.DRONE_FACTORY: "icon_dronefactory", Facility.Kind.DRONE_PORT: "icon_droneport", Facility.Kind.TEL: "icon_tel", 
@@ -71,14 +76,22 @@ static func make_cover(world: GameWorld) -> FogLayer:
 	return l
 
 
-func _process(_delta: float) -> void :
+func _process(delta: float) -> void :
 	if gw == null or gw.camera == null or gw.vision == null:
 		return
 	if cover:
 		var v: int = gw.vision.ver if gw.vision.active() else -2
 		if v != _cover_ver:
 			_cover_ver = v
-			queue_redraw()
+			_cover_pending = true
+		# >>> PERF_PATCH_V2: перерисовка не чаще COVER_MIN_DT (ver дёргается несколько раз в секунду)
+		if _cover_pending:
+			_cover_t -= delta
+			if _cover_t <= 0.0:
+				_cover_t = COVER_MIN_DT
+				_cover_pending = false
+				queue_redraw()
+		# <<< PERF_PATCH_V2
 		return
 	_tint_update()
 	var cam: MapCamera = gw.camera
@@ -268,12 +281,24 @@ func _draw_cover() -> void :
 	var tv: TerrainView = gw.terrain
 	if tv == null or tv.tex == null:
 		return
+	# >>> PERF_PATCH_V2: чистка кэша источников от мёртвых/удалённых facilities
+	var seen: Dictionary = {}
+	# <<< PERF_PATCH_V2
 	for f: Facility in gw.vision.covers():
+		# >>> PERF_PATCH_V2
+		seen[f] = true
+		# <<< PERF_PATCH_V2
 		var src: Rect2 = _src.get(f, Rect2())
 		if src.size == Vector2.ZERO:
 			src = _pick_src(f)
 			_src[f] = src
 		draw_texture_rect_region(tv.tex, Rect2(Vector2(f.cell * GameWorld.CELL), Vector2(f.size * GameWorld.CELL)), src)
+	# >>> PERF_PATCH_V2
+	if _src.size() > seen.size() + 16:
+		for k: Facility in _src.keys():
+			if not seen.has(k):
+				_src.erase(k)
+	# <<< PERF_PATCH_V2
 
 
 func _pick_src(f: Facility) -> Rect2:

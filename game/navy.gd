@@ -1451,16 +1451,20 @@ func update(dt: float) -> void :
 			_gun_shore(s)
 	_tick_msl(dt)
 	_coast_acc += dt
-	if _coast_acc >= 0.5:
+	# >>> PERF_PATCH_V2: 0.5 -> 1.0 с (O(facilities × ships) на береговых батареях)
+	if _coast_acc >= 1.0:
 		_coastal(_coast_acc)
 		_coast_acc = 0.0
+	# <<< PERF_PATCH_V2
 	art.tick(dt)
 	fl.tick(dt)
 	_cmd_t += dt
-	if _cmd_t >= 0.25:
+	# >>> PERF_PATCH_V2: 0.25 -> 0.5 с (O(дроны × корабли) × 2 функции)
+	if _cmd_t >= 0.5:
 		_cmd_t = 0.0
 		_cm_defence()
 		_point_defence()
+	# <<< PERF_PATCH_V2
 	for k in range(_cm_kill.size() - 1, -1, -1):
 		if now >= float(_cm_kill[k][0]):
 			var ck: Array = _cm_kill[k]
@@ -1561,24 +1565,25 @@ func _think(s: Ship, dt: float) -> void :
 	s.tgt = 0
 	_boat_t.erase(s.id)
 	if s.has_mod("gun"):
-		var best: float = GUN_RANGE
+		# >>> PERF_PATCH_V2: поиск цели на квадратах дистанций (без sqrt на каждую пару)
+		var best: float = GUN_RANGE * GUN_RANGE
 		if s.order_tgt > 0:
 			var ot: Ship = ship(s.order_tgt)
 			if ot == null or not ot.alive():
 				s.order_tgt = 0
-			elif ot.pos.distance_to(s.pos) <= GUN_RANGE:
+			elif ot.pos.distance_squared_to(s.pos) <= best:
 				s.tgt = ot.id
 		if s.tgt == 0:
 			for o: Ship in ships:
 				if o.alive() and o.c != s.c and _hostile(s.c, o.c):
-					var d: float = o.pos.distance_to(s.pos)
+					var d: float = o.pos.distance_squared_to(s.pos)
 					if d < best:
 						best = d
 						s.tgt = o.id
 		if s.tgt == 0:
 			for cs: Dictionary in convoys():
 				if may_hit(s.c, int(cs["owner"]), -1, s):
-					var d2: float = (cs["pos"] as Vector2).distance_to(s.pos)
+					var d2: float = (cs["pos"] as Vector2).distance_squared_to(s.pos)
 					if d2 < best and int(cs["stage"]) != 0:
 						best = d2
 						s.tgt = - int(cs["id"])
@@ -1587,9 +1592,11 @@ func _think(s: Ship, dt: float) -> void :
 				if int(L["stage"]) != Naval.Stage.SAIL or not _hostile(s.c, int(L["c"])):
 					continue
 				for b: Dictionary in L["boats"]:
-					if not bool(b["sunk"]) and not bool(b.get("out", false)) and (b["pos"] as Vector2).distance_to(s.pos) < best:
-						best = (b["pos"] as Vector2).distance_to(s.pos)
+					var db: float = (b["pos"] as Vector2).distance_squared_to(s.pos)
+					if not bool(b["sunk"]) and not bool(b.get("out", false)) and db < best:
+						best = db
 						_boat_t[s.id] = [L, b]
+		# <<< PERF_PATCH_V2
 	_shore_t.erase(s.id)
 	if s.tgt == 0 and not _boat_t.has(s.id) and s.has_mod("gun"):
 		var su: Object = _shore_target(s)
@@ -2366,6 +2373,10 @@ func _point_defence() -> void :
 	if mil == null or ships.is_empty():
 		return
 	var now: float = gw.game_time
+	# >>> PERF_PATCH_V2: сравнение дистанций на квадратах (без sqrt на каждую пару)
+	var ciws_r2: float = PD_CIWS_R * PD_CIWS_R
+	var gun_r2: float = PD_GUN_R * PD_GUN_R
+	# <<< PERF_PATCH_V2
 	for dr: Drone in mil.drones:
 		if (dr.state != Drone.State.FLY and dr.state != Drone.State.DIVE) or not dr.airborne() or dr.kind < 0 or dr.kind > 2:
 			continue
@@ -2374,16 +2385,18 @@ func _point_defence() -> void :
 				break
 			if not s.alive():
 				continue
-			var dd: float = s.pos.distance_to(dr.pos)
-			if dd > PD_CIWS_R or not _hostile(s.c, dr.country_id):
+			# >>> PERF_PATCH_V2
+			var dd: float = s.pos.distance_squared_to(dr.pos)
+			if dd > ciws_r2 or not _hostile(s.c, dr.country_id):
 				continue
+			# <<< PERF_PATCH_V2
 			var p: float = 0.0
 			var gun: bool = false
 			if s.has_mod("ciws") and s.ciws_busy <= now and int(s.ammo.get("ciws", 0)) >= PD_BURST:
 				s.ammo["ciws"] = int(s.ammo["ciws"]) - PD_BURST
 				s.ciws_busy = now + PD_BUSY / float(maxi(1, s.count_mod("ciws")))
 				p = float(PD_CIWS_P[dr.kind])
-			elif s.has_mod("gun") and s.pd_t <= now and dd <= PD_GUN_R and float(PD_GUN_P[dr.kind]) > 0.0:
+			elif s.has_mod("gun") and s.pd_t <= now and dd <= gun_r2 and float(PD_GUN_P[dr.kind]) > 0.0:
 				s.pd_t = now + PD_GUN_CD / float(maxi(1, s.count_mod("gun")))
 				p = float(PD_GUN_P[dr.kind])
 				gun = true
@@ -2410,9 +2423,12 @@ func _cm_defence() -> void :
 	for dr: Drone in gw.mil.drones:
 		if (dr.kind != 1 and dr.kind != 2) or dr.state != Drone.State.FLY:
 			continue
+		# >>> PERF_PATCH_V2: сравнение на квадрате дистанции (sqrt только при пуске)
 		var sr: float = SAM_R * (0.7 if dr.low else 1.0)
+		var sr2: float = sr * sr
+		# <<< PERF_PATCH_V2
 		for s: Ship in ships:
-			if not s.alive() or int(s.ammo.get("sam", 0)) <= 0 or s.sam_busy > now or s.pos.distance_to(dr.pos) > sr:
+			if not s.alive() or int(s.ammo.get("sam", 0)) <= 0 or s.sam_busy > now or s.pos.distance_squared_to(dr.pos) > sr2:
 				continue
 			if not _hostile(s.c, dr.country_id):
 				continue

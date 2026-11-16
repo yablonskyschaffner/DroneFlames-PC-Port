@@ -117,6 +117,9 @@ var _flines: Array = []
 var _fgrid_t: float = -99.0
 var _fpv_fly: Dictionary = {}
 var _fpv_b: Dictionary = {}
+# >>> PERF_PATCH_V2: список живых FPV-юнитов, ребилдится в _build_grid (0.25 с)
+var _fpv_list: Array[Unit] = []
+# <<< PERF_PATCH_V2
 var post_fixes: int = 0
 var occupy_why: String = ""
 static var occupy_m: Variant = ""
@@ -152,13 +155,32 @@ func idle_units(country_id: int) -> Array[Unit]:
 
 
 
+# >>> PERF_PATCH_V2: слайсинг _train — казармы обрабатываются раз в TRAIN_SLICES шагов
+# (prod_t тикает накопленным dt, темп производства не меняется; задержка решений ≤ 0.8 с)
+const TRAIN_SLICES: int = 4
+var _train_slice_i: int = 0
+# бюджет A* для патрулей полиции (запросов nav_path за 1-секундный тик)
+const POLICE_PATH_BUDGET: int = 3
+var _police_rr: int = 0
+# <<< PERF_PATCH_V2
+
+
 func _train(dt: float) -> void :
 	var mil: Military = gw.mil
 	_tr_on = true
 	_tr_built = false
 	var counts: Dictionary = {}
 	var counted: bool = false
+	# >>> PERF_PATCH_V2
+	_train_slice_i += 1
+	var tsl: int = _train_slice_i % TRAIN_SLICES
+	var sdt: float = dt * float(TRAIN_SLICES)
+	# <<< PERF_PATCH_V2
 	for f: Facility in mil.facilities:
+		# >>> PERF_PATCH_V2: в этом шаге обслуживается только 1/4 казарм
+		if f.id % TRAIN_SLICES != tsl:
+			continue
+		# <<< PERF_PATCH_V2
 		if f.kind == Facility.Kind.BARRACKS and f.army_no == 0:
 			_number(f)
 		if (f.halted or f.mb) and f.kind == Facility.Kind.BARRACKS:
@@ -211,7 +233,7 @@ func _train(dt: float) -> void :
 			f.prod_refill = f.filled
 			f.prod_t = 0.0
 			f.queued = [t]
-		f.prod_t += dt * (gw.ops.refill_boost(f) if gw.ops != null else 1.0)
+		f.prod_t += sdt * (gw.ops.refill_boost(f) if gw.ops != null else 1.0)
 		var tt: int = int(f.queued[0]) if not f.queued.is_empty() else Unit.Type.INFANTRY
 		if f.prod_t >= float(SPEC[tt]["time"]) * (REFILL_SLOW if f.prod_refill else 1.0):
 			f.producing = false
@@ -500,7 +522,16 @@ func toggle_police_patrol(station: Facility) -> void:
 func _police_patrol_tick() -> void:
 	if gw.data == null or gw.econ == null:
 		return
-	for unit: Unit in units:
+	# >>> PERF_PATCH_V2: бюджет A* — максимум POLICE_PATH_BUDGET запросов nav_path за тик,
+	# round-robin по списку юнитов; остальная полиция ждёт следующего тика (1 с)
+	var n: int = units.size()
+	if n == 0:
+		return
+	var budget: int = POLICE_PATH_BUDGET
+	var start: int = _police_rr % n
+	_police_rr += 1
+	for i0 in n:
+		var unit: Unit = units[(start + i0) % units.size()]
 		if unit.type != Unit.Type.POLICE or not unit.alive():
 			continue
 		var station: Facility = unit.home
@@ -515,12 +546,18 @@ func _police_patrol_tick() -> void:
 			if not gw.data.inside(cell.x, cell.y) or gw.data.get_owner_id(cell.x, cell.y) != unit.country_id or Biome.is_water(gw.data.get_biome(cell.x, cell.y)):
 				continue
 			var destination: Vector2 = Vector2(cell * GameWorld.CELL)
+			budget -= 1
 			var route: PackedVector2Array = gw.econ.nav_path(unit.pos, destination)
 			if not route.is_empty():
 				unit.path = route
 				unit.pi = 0
 				unit.state = Unit.State.MOVE
 				break
+			if budget <= 0:
+				return
+		if budget <= 0:
+			return
+	# <<< PERF_PATCH_V2
 
 
 func range_of(u: Unit) -> float:
@@ -1164,14 +1201,18 @@ func _fpv(f: Unit, dt: float) -> void :
 
 
 func fpv_targets(country_id: int, p: Vector2, r: float) -> Array[Unit]:
+	# >>> PERF_PATCH_V2: перебор только _fpv_list (FPV-юниты, ребилд 0.25 с в _build_grid)
+	# вместо полного скана units; устаревание списка ≤ 0.25 с — как у _grid
 	var out: Array[Unit] = []
-	for u: Unit in units:
-		if u.type == Unit.Type.FPV and u.alive() and u.jam_t <= 0.0 and _hostile(country_id, u.country_id) and u.pos.distance_squared_to(p) <= r * r:
+	var r2: float = r * r
+	for u: Unit in _fpv_list:
+		if u.alive() and u.jam_t <= 0.0 and _hostile(country_id, u.country_id) and u.pos.distance_squared_to(p) <= r2:
 			out.append(u)
 	for u2: Unit in fire.recon:
-		if u2.alive() and u2.jam_t <= 0.0 and _hostile(country_id, u2.country_id) and u2.pos.distance_squared_to(p) <= r * r:
+		if u2.alive() and u2.jam_t <= 0.0 and _hostile(country_id, u2.country_id) and u2.pos.distance_squared_to(p) <= r2:
 			out.append(u2)
 	return out
+	# <<< PERF_PATCH_V2
 
 
 
@@ -2247,11 +2288,17 @@ func _build_grid() -> void :
 	_gmask.clear()
 	_hmask_cache.clear()
 	_fpv_fly.clear()
+	# >>> PERF_PATCH_V2: отдельный список FPV-юнитов для fpv_targets (в _grid они не входят)
+	_fpv_list.clear()
+	# <<< PERF_PATCH_V2
 	for u: Unit in units:
 		if not u.alive():
 			continue
 		if u.type == Unit.Type.FPV:
 			_fpv_fly[u.country_id] = int(_fpv_fly.get(u.country_id, 0)) + 1
+			# >>> PERF_PATCH_V2
+			_fpv_list.append(u)
+			# <<< PERF_PATCH_V2
 			continue
 		var k: = Vector2i(floori(u.pos.x / GRID_PX), floori(u.pos.y / GRID_PX))
 		var a: Array = _grid.get(k, [])

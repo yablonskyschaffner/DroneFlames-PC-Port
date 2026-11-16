@@ -74,6 +74,14 @@ func _ready() -> void :
 	_outline.draw.connect(_draw_outline)
 
 
+# >>> PERF_PATCH_V2: дорогие сканы «занятости» (самолёты/дроны/facilities/aftermath)
+# выполняются не чаще BUSY_SCAN_T реальных секунд; снаряды/ракеты проверяются каждый кадр
+const BUSY_SCAN_T: float = 0.25
+var _busy_t: float = 0.0
+var _busy_scans: bool = false
+# <<< PERF_PATCH_V2
+
+
 func _process(_delta: float) -> void :
 	if gw == null or gw.mil == null:
 		return
@@ -84,28 +92,36 @@ func _process(_delta: float) -> void :
 		busy = true
 	if not air and _sel_army() != null:
 		busy = true
-	if not busy:
-		for a: Aircraft in mil.air.aircraft:
-			if a.state != Aircraft.State.PARKED or a.service_t > 0.0:
-				busy = true
-				break
-	if not busy:
-		for d: Drone in mil.drones:
-			if d.state != Drone.State.PARKED:
-				busy = true
-				break
-	if not busy:
-		for f: Facility in mil.facilities:
-			if f.producing or f.moving or not f.craters.is_empty() or gw.game_time < f.flash_until or f.restore_t > 0.0 or f.reload_t > 0.0 or f.lower_t > 0.0:
-				busy = true
-				break
+	# >>> PERF_PATCH_V2: сканы раз в BUSY_SCAN_T вместо каждого кадра (×3 экземпляра слоя)
+	_busy_t -= _delta
+	if _busy_t <= 0.0:
+		_busy_t = BUSY_SCAN_T
+		_busy_scans = false
+		if not busy:
+			for a: Aircraft in mil.air.aircraft:
+				if a.state != Aircraft.State.PARKED or a.service_t > 0.0:
+					_busy_scans = true
+					break
+		if not _busy_scans:
+			for d: Drone in mil.drones:
+				if d.state != Drone.State.PARKED:
+					_busy_scans = true
+					break
+		if not _busy_scans:
+			for f: Facility in mil.facilities:
+				if f.producing or f.moving or not f.craters.is_empty() or gw.game_time < f.flash_until or f.restore_t > 0.0 or f.reload_t > 0.0 or f.lower_t > 0.0:
+					_busy_scans = true
+					break
+		if not air and gw.aftermath != null and ( not gw.aftermath.wrecks.is_empty() or not gw.aftermath.trucks.is_empty() or _rebuilding()):
+			_busy_scans = true
+		if air and gw.aftermath != null and not gw.aftermath.air.falls.is_empty():
+			_busy_scans = true
+	if _busy_scans:
+		busy = true
+	# <<< PERF_PATCH_V2
 	if not air and gw.diplo != null and gw.diplo.sky != null and not gw.diplo.sky.trip.trips.is_empty():
 		busy = true
 	if not air and _pre_frame():
-		busy = true
-	if not air and gw.aftermath != null and ( not gw.aftermath.wrecks.is_empty() or not gw.aftermath.trucks.is_empty() or _rebuilding()):
-		busy = true
-	if air and gw.aftermath != null and not gw.aftermath.air.falls.is_empty():
 		busy = true
 	if busy or _had:
 		queue_redraw()

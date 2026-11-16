@@ -357,14 +357,28 @@ func net_step(dt: float) -> void :
 		_update_checkpoints()
 
 
+# >>> PERF_PATCH_V2: полные аплоады текстур карты 2048×2048 (terrain + owners)
+# не чаще FLUSH_MIN_DT реальных секунд; между аплоадами dirty-флаги просто копятся
+const FLUSH_MIN_DT: float = 0.1
+var _flush_t: float = 0.0
+# <<< PERF_PATCH_V2
+
+
 func _process(delta: float) -> void :
 	if data == null:
 		return
+	# >>> PERF_PATCH_V2
+	_flush_t -= delta
+	var do_flush: bool = _flush_t <= 0.0
+	if do_flush:
+		_flush_t = FLUSH_MIN_DT
+	# <<< PERF_PATCH_V2
 	if net_driven:
 		if vision != null:
 			vision.update(delta)
-		terrain.flush()
-		_flush_territory()
+		if do_flush:
+			terrain.flush()
+			_flush_territory()
 		return
 	var total: float = delta * time_scale
 	var n: int = mini(SIM_MAX_STEPS, ceili(total / SIM_STEP - 0.001)) if total > 0.0 else 0
@@ -382,8 +396,9 @@ func _process(delta: float) -> void :
 	_poll_roads()
 	if vision != null:
 		vision.update(delta)
-	terrain.flush()
-	_flush_territory()
+	if do_flush:
+		terrain.flush()
+		_flush_territory()
 	if _checkpoints_dirty:
 		_update_checkpoints()
 

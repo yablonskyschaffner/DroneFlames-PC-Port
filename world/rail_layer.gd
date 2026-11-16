@@ -173,8 +173,21 @@ func _sync_bridges() -> void :
 
 
 func _draw() -> void :
+	# >>> PERF_PATCH_V2: рисуем только чанки в зоне видимости камеры
+	# (раньше каждый растровый чанк отдавался своим draw call — сотни DC при большом сети)
+	var cam: MapCamera = rail.gw.camera
+	if cam == null:
+		for key: Vector2i in chunks:
+			draw_texture((chunks[key] as Array)[1], Vector2(key * CK))
+		return
+	var half: Vector2 = cam.view_size() * 0.5 / cam.zoom.x
+	var vb: Rect2 = Rect2(cam.position - half, half * 2.0).grow(8.0)
 	for key: Vector2i in chunks:
-		draw_texture((chunks[key] as Array)[1], Vector2(key * CK))
+		var org: Vector2 = Vector2(key * CK)
+		if not vb.intersects(Rect2(org, Vector2(CK, CK))):
+			continue
+		draw_texture((chunks[key] as Array)[1], org)
+	# <<< PERF_PATCH_V2
 
 
 func _raster(key: Vector2i) -> void :

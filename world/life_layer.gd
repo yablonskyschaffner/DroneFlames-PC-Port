@@ -40,6 +40,13 @@ func _road(c: Vector2i) -> bool:
 	return gw.road_ok(c)
 
 
+# >>> PERF_PATCH_V2: интервал вызова _fire_brigades в _process
+const BRIGADE_DT: float = 0.25
+var _br_t: float = 0.0
+var _had_agents: bool = false
+# <<< PERF_PATCH_V2
+
+
 func _process(delta: float) -> void :
 	if gw == null or gw.data == null or gw.camera == null:
 		return
@@ -53,7 +60,12 @@ func _process(delta: float) -> void :
 		_t = 1.0
 		_populate(z)
 	if not gw.net_driven:
-		_fire_brigades()
+		# >>> PERF_PATCH_V2: бригады — не чаще BRIGADE_DT реальных секунд
+		_br_t -= delta
+		if _br_t <= 0.0:
+			_br_t = BRIGADE_DT
+			_fire_brigades()
+		# <<< PERF_PATCH_V2
 	for k in range(agents.size() - 1, -1, -1):
 		var a: Dictionary = agents[k]
 		match int(a["type"]):
@@ -62,7 +74,14 @@ func _process(delta: float) -> void :
 			2, 3:
 				if not gw.net_driven and not _drive(a, dt):
 					agents.remove_at(k)
-	queue_redraw()
+	# >>> PERF_PATCH_V2: перерисовка только когда есть агенты (+ один кадр на очистку)
+	if not agents.is_empty():
+		queue_redraw()
+		_had_agents = true
+	elif _had_agents:
+		_had_agents = false
+		queue_redraw()
+	# <<< PERF_PATCH_V2
 
 
 
@@ -548,12 +567,22 @@ func _draw_clipped(tex: Texture2D, tl: Vector2, sz: Vector2, r: Rect2, flip: boo
 	if not any:
 		draw_texture_rect_region(tex, Rect2(tl, sz), r)
 		return
-	for k in w:
+	# >>> PERF_PATCH_V2: соседние колонки одинаковой высоты сливаются в одну полосу
+	# (визуал тот же, canvas-команд в разы меньше)
+	var k: int = 0
+	while k < w:
 		var vh: int = cut[k]
 		if vh <= 0:
+			k += 1
 			continue
-		var sx: float = r.position.x + float(w - 1 - k if flip else k)
-		draw_texture_rect_region(tex, Rect2(x0 + k, y0, 1, vh), Rect2(sx, r.position.y, 1, vh))
+		var k2: int = k + 1
+		while k2 < w and cut[k2] == vh:
+			k2 += 1
+		var rw: int = k2 - k
+		var sx: float = r.position.x + float(w - k2 if flip else k)
+		draw_texture_rect_region(tex, Rect2(float(x0 + k), float(y0), float(rw), float(vh)), Rect2(sx, r.position.y, float(rw), float(vh)))
+		k = k2
+	# <<< PERF_PATCH_V2
 
 
 

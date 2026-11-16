@@ -892,16 +892,22 @@ func _port_with_space(c: Country, near: Vector2) -> Facility:
 
 func _repair(dt: float) -> void :
 	for f: Facility in facilities:
-		if f.craters.is_empty():
-			continue
-		f.repair_t -= dt
-		if f.repair_t <= 0.0:
-			for p: Vector2 in f.craters:
-				gw.fx.spawn("build_spark", p, 6)
-			f.craters = PackedVector2Array()
-			f.repair_t = 0.0
-			if gw.country_by_id(f.country_id).is_player:
-				gw.say(gw.country_by_id(f.country_id), Loc.mk("ВПП восстановлена"))
+		_repair_one(f, dt)
+
+
+# >>> PERF_PATCH_V2: тело _repair вынесено в _repair_one для слайсинга
+func _repair_one(f: Facility, dt: float) -> void :
+	if f.craters.is_empty():
+		return
+	f.repair_t -= dt
+	if f.repair_t <= 0.0:
+		for p: Vector2 in f.craters:
+			gw.fx.spawn("build_spark", p, 6)
+		f.craters = PackedVector2Array()
+		f.repair_t = 0.0
+		if gw.country_by_id(f.country_id).is_player:
+			gw.say(gw.country_by_id(f.country_id), Loc.mk("ВПП восстановлена"))
+# <<< PERF_PATCH_V2
 
 
 
@@ -1100,28 +1106,34 @@ func _update_fuel() -> void :
 
 func _watch_state() -> void :
 	for f: Facility in facilities:
-		var a: bool = alive(f)
-		if a == f.was_alive:
-			continue
-		f.was_alive = a
-		if f.restore_t > 0.0 and not a:
-			continue
-		if not a:
-			f.ruined_at = gw.game_time
-			_stop_fx(f)
-			if gw.vfx != null:
-				gw.vfx.on_burn(f)
-			if f.kind == Facility.Kind.REFINERY:
-				_refinery_blaze(f)
-			elif f.kind == Facility.Kind.POWER_PLANT or f.kind == Facility.Kind.NUCLEAR_PLANT:
-				f.arc_next = gw.game_time
-				f.fx.append(gw.fx.handle(gw.fx.spawn("power_arc_loop", local_px(f.main_obj, [20, 40]), 6, gw.game_time + 20.0)))
-				gw.fx.spawn("spark_burst", local_px(f.main_obj, [12, 30]), 6)
-				if gw.country_by_id(f.country_id).is_player:
-					_plant_hit_msg = true
-		else:
-			_stop_fx(f)
-			_ambient_fx(f)
+		_watch_state_one(f)
+
+
+# >>> PERF_PATCH_V2: тело _watch_state вынесено в _watch_state_one для слайсинга
+func _watch_state_one(f: Facility) -> void :
+	var a: bool = alive(f)
+	if a == f.was_alive:
+		return
+	f.was_alive = a
+	if f.restore_t > 0.0 and not a:
+		return
+	if not a:
+		f.ruined_at = gw.game_time
+		_stop_fx(f)
+		if gw.vfx != null:
+			gw.vfx.on_burn(f)
+		if f.kind == Facility.Kind.REFINERY:
+			_refinery_blaze(f)
+		elif f.kind == Facility.Kind.POWER_PLANT or f.kind == Facility.Kind.NUCLEAR_PLANT:
+			f.arc_next = gw.game_time
+			f.fx.append(gw.fx.handle(gw.fx.spawn("power_arc_loop", local_px(f.main_obj, [20, 40]), 6, gw.game_time + 20.0)))
+			gw.fx.spawn("spark_burst", local_px(f.main_obj, [12, 30]), 6)
+			if gw.country_by_id(f.country_id).is_player:
+				_plant_hit_msg = true
+	else:
+		_stop_fx(f)
+		_ambient_fx(f)
+# <<< PERF_PATCH_V2
 
 
 

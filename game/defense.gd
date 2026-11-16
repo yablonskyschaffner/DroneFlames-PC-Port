@@ -319,6 +319,13 @@ func _taken(t: Object) -> int:
 	return n
 
 
+# >>> PERF_PATCH_V2: слайсинг наведения — цели ищутся раз в DEF_ACQ_SLICES шагов
+# (задержка реакции ≤ 0.5 с при cd=0.25; cd/reload/магазины тикают каждый шаг как раньше)
+const DEF_ACQ_SLICES: int = 2
+var _acq_step: int = 0
+# <<< PERF_PATCH_V2
+
+
 func update(dt: float) -> void :
 	_anim += dt
 	if floori(gw.game_time / BOT_RULE_S) != floori((gw.game_time - dt) / BOT_RULE_S):
@@ -327,6 +334,9 @@ func update(dt: float) -> void :
 	if anim:
 		_anim = 0.0
 	var mil: Military = gw.mil
+	# >>> PERF_PATCH_V2
+	_acq_step += 1
+	# <<< PERF_PATCH_V2
 	for f: Facility in mil.facilities:
 		if not is_ad(f.kind) and f.kind != Facility.Kind.AD_RADAR and f.kind != Facility.Kind.AD_EW:
 			continue
@@ -362,6 +372,10 @@ func update(dt: float) -> void :
 			_sam_anim(f, dt)
 		if f.cd > 0.0 or (gm > 0 and f.mag == 0):
 			continue
+		# >>> PERF_PATCH_V2: сам поиск целей раз в DEF_ACQ_SLICES шагов (round-robin по f.id)
+		if (f.id + _acq_step) % DEF_ACQ_SLICES != 0:
+			continue
+		# <<< PERF_PATCH_V2
 		var ts: Array = _targets(f, sp)
 		if ts.is_empty():
 			f.cd = 0.25

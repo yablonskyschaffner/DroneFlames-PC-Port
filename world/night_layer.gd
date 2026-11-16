@@ -20,6 +20,10 @@ var _last: float = -1.0
 
 var _area: Array = []
 var _glow: Texture2D
+# >>> PERF_PATCH_V2: пересчёт источников света ночью не чаще AREA_DT реальных секунд
+const AREA_DT: float = 0.25
+var _area_t: float = 0.0
+# <<< PERF_PATCH_V2
 
 const AREA_MIN_R: float = 16.0
 const AREA_MAX_N: int = 8
@@ -93,7 +97,12 @@ func _process(_delta: float) -> void :
 	var g_prev: Color = grade
 	grade = ColorGrade.tint(self)
 	if factor > 0.01 or _last > 0.01 or grade != Color.WHITE or g_prev != Color.WHITE:
-		_area = _area_lights(_view()) if factor > 0.01 and gw.camera != null else []
+		# >>> PERF_PATCH_V2
+		_area_t -= _delta
+		if _area_t <= 0.0:
+			_area_t = AREA_DT
+			_area = _area_lights(_view()) if factor > 0.01 and gw.camera != null else []
+		# <<< PERF_PATCH_V2
 		queue_redraw()
 		lights.queue_redraw()
 	_last = factor

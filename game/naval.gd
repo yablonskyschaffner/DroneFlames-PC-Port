@@ -546,7 +546,7 @@ func divert(home: Facility, members: Array[Unit], city: City, goal: Vector2, mod
 		u.target_city = -1
 		u.target = null
 		var dest: Vector2 = gw.army.safe_point(L["embark"], Vector2(float(k % 4) * 8.0 - 12.0, float(k / 4) * 8.0 - 8.0))
-		_walk(u, dest)
+		_walk(u, dest, true)
 		k += 1
 	var c: Country = gw.country_by_id(home.country_id)
 	if c != null and c.is_player:
@@ -574,6 +574,9 @@ func on_cancel(home: Facility) -> void :
 func update(dt: float) -> void :
 	_fire_acc += dt
 	_snd_t -= dt
+	# >>> PERF_PATCH_V2: бюджет запросов A* на шаг для высадок/экспедиций
+	_walk_budget = WALK_BUDGET
+	# <<< PERF_PATCH_V2
 	for k in range(landings.size() - 1, -1, -1):
 		if k < landings.size():
 			_tick_landing(landings[k], dt)
@@ -602,7 +605,19 @@ func _alive_march(L: Dictionary) -> Array:
 	return out
 
 
-func _walk(u: Unit, dest: Vector2) -> void :
+# >>> PERF_PATCH_V2: бюджет nav_path — максимум WALK_BUDGET запросов за шаг
+const WALK_BUDGET: int = 2
+var _walk_budget: int = 0
+# <<< PERF_PATCH_V2
+
+
+func _walk(u: Unit, dest: Vector2, force: bool = false) -> void :
+	# >>> PERF_PATCH_V2: при исчерпании бюджета юнит получит путь на следующем шаге
+	if not force:
+		if _walk_budget <= 0:
+			return
+		_walk_budget -= 1
+	# <<< PERF_PATCH_V2
 	u.path = gw.econ.nav_path(u.pos, dest) if u.pos.distance_to(dest) > 30.0 else PackedVector2Array([dest])
 	if u.path.is_empty():
 		u.path = PackedVector2Array([dest])

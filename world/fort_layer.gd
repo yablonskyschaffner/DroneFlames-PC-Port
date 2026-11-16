@@ -18,7 +18,9 @@ func _process(delta: float) -> void :
 	_dig_t -= delta
 	if _dig_t > 0.0 or gw == null or gw.mil == null:
 		return
-	_dig_t = 0.25
+	# >>> PERF_PATCH_V2: 0.25 -> 0.5 с (каждая перерисовка пересобирает ~9k canvas-объектов)
+	_dig_t = 0.5
+	# <<< PERF_PATCH_V2
 	var busy: bool = not _dig_cells().is_empty()
 	if not busy:
 		for f: Facility in gw.mil.facilities:

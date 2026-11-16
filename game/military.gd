@@ -23,10 +23,10 @@ func update(dt: float) -> void :
 	if _income_t >= INCOME_DT:
 		_income_t -= INCOME_DT
 		_income()
-	for f: Facility in facilities:
-		if f.restore_t > 0.0:
-			_restore_tick(f, dt)
-	_watch_state()
+	# >>> PERF_PATCH_V2: полные проходы по facilities (restore/watch/repair/tels/arcs)
+	# слайсируются по f.id % MIL_SLICES — каждый объект обрабатывается раз в MIL_SLICES шагов
+	_mil_slice_tick(dt)
+	# <<< PERF_PATCH_V2
 	_pending_t += dt
 	if _pending_t >= 2.0 and not _pending_plants.is_empty():
 		_pending_t = 0.0
@@ -46,7 +46,6 @@ func update(dt: float) -> void :
 	if _fuel_t >= FUEL_DT:
 		_fuel_t -= FUEL_DT
 		_update_fuel()
-	_update_arcs()
 	_ai_t += dt
 	if _ai_t >= 10.0:
 		_ai_t = 0.0
@@ -55,14 +54,12 @@ func update(dt: float) -> void :
 	if _prod_acc >= 0.5:
 		_produce(_prod_acc)
 		_prod_acc = 0.0
-	_repair(dt)
 	if int(gw.game_time / HEAL_DT) != int((gw.game_time - dt) / HEAL_DT):
 		heal_partial()
 	_roam_t += dt
 	if _roam_t >= ROAM_DT:
 		_roam_t = 0.0
 		_roam_check()
-	_update_tels(dt)
 	_update_drones(dt)
 	_update_missiles(dt)
 	_standing_tick(dt)
@@ -73,6 +70,30 @@ func update(dt: float) -> void :
 	if _audio_t >= 0.5:
 		_audio_t = 0.0
 		_audio_tick()
+
+
+# >>> PERF_PATCH_V2 (military slice)
+const MIL_SLICES: int = 4
+var _mil_slice_i: int = 0
+var _mil_arcs_t: float = 0.0
+
+func _mil_slice_tick(dt: float) -> void :
+	_mil_slice_i += 1
+	var sl: int = _mil_slice_i % MIL_SLICES
+	var sdt: float = dt * float(MIL_SLICES)
+	for f: Facility in facilities:
+		if f.id % MIL_SLICES != sl:
+			continue
+		if f.restore_t > 0.0:
+			_restore_tick(f, sdt)
+		_watch_state_one(f)
+		_repair_one(f, sdt)
+		_tels_one(f, sdt)
+	_mil_arcs_t += dt
+	if _mil_arcs_t >= 0.5:
+		_mil_arcs_t = 0.0
+		_update_arcs()
+# <<< PERF_PATCH_V2
 
 
 
@@ -371,80 +392,86 @@ func launch_missiles(country: Country, target: Vector2, count: int) -> int:
 
 func _update_tels(dt: float) -> void :
 	for f: Facility in facilities:
-		if f.kind != Facility.Kind.TEL:
-			# Only mobile defense facilities can use the shared vehicle movement path.
-			# A stale/corrupt moving flag on a factory (for example a mod building)
-			# must never make it drive or be parked as a vehicle.
-			if f.moving and is_mobile(f.kind):
-				_drive_tel(f, dt)
-			elif f.moving:
-				f.moving = false
-				f.mpath.clear()
-				drive_dir.erase(f.id)
-			continue
-		var c: Country = gw.country_by_id(f.country_id)
-		if f.moving:
+		_tels_one(f, dt)
+
+
+# >>> PERF_PATCH_V2: тело _update_tels вынесено в _tels_one для слайсинга
+func _tels_one(f: Facility, dt: float) -> void :
+	if f.kind != Facility.Kind.TEL:
+		# Only mobile defense facilities can use the shared vehicle movement path.
+		# A stale/corrupt moving flag on a factory (for example a mod building)
+		# must never make it drive or be parked as a vehicle.
+		if f.moving and is_mobile(f.kind):
 			_drive_tel(f, dt)
-			continue
-		if not alive(f):
-			if f.missiles > 0 or f.erect_t >= 0.0:
-				f.missiles = 0
-				f.erect_t = -1.0
-				f.queued.clear()
-				f.reload_t = 0.0
-			continue
+		elif f.moving:
+			f.moving = false
+			f.mpath.clear()
+			drive_dir.erase(f.id)
+		return
+	var c: Country = gw.country_by_id(f.country_id)
+	if f.moving:
+		_drive_tel(f, dt)
+		return
+	if not alive(f):
+		if f.missiles > 0 or f.erect_t >= 0.0:
+			f.missiles = 0
+			f.erect_t = -1.0
+			f.queued.clear()
+			f.reload_t = 0.0
+		return
 
-		if f.lower_t > 0.0:
-			f.lower_t -= dt
-			var fr: int = clampi(roundi(6.0 * minf(1.0, f.lower_t / BOOM_LOWER)), 0, 6)
-			gw.set_obj_frame(f.main_obj, f.lower_sprite, fr)
-			if f.lower_t <= 0.0:
-				f.lower_t = 0.0
-				_tel_sprite(f, 0)
-			continue
+	if f.lower_t > 0.0:
+		f.lower_t -= dt
+		var fr: int = clampi(roundi(6.0 * minf(1.0, f.lower_t / BOOM_LOWER)), 0, 6)
+		gw.set_obj_frame(f.main_obj, f.lower_sprite, fr)
+		if f.lower_t <= 0.0:
+			f.lower_t = 0.0
+			_tel_sprite(f, 0)
+		return
 
-		if f.reload_t > 0.0:
-			if f.erect_t < 0.0:
-				f.reload_t -= dt
-			if f.reload_t <= 0.0:
-				f.reload_t = 0.0
-				f.missiles += 1
-				if f.erect_t < 0.0:
-					_tel_sprite(f, 0)
-				gw.fx.spawn("build_spark", f.center_px(), 6)
-		elif f.missiles < 2 and f.erect_t < 0.0 and (f.queued.is_empty() or f.missiles == 0):
-
-			if c.missile_stock[MT_BALLISTIC] > 0:
-				c.missile_stock[MT_BALLISTIC] -= 1
-				f.reload_t = TEL_RELOAD
-				f.warned_empty = false
-			elif f.missiles == 0 and c.is_player and not f.warned_empty:
-				f.warned_empty = true
-				gw.say(c, Loc.mk("ОТРК пуст: нужны баллистические ракеты с ракетного завода"))
-
+	if f.reload_t > 0.0:
 		if f.erect_t < 0.0:
-			if not f.queued.is_empty() and f.missiles > 0 and not c.is_player:
+			f.reload_t -= dt
+		if f.reload_t <= 0.0:
+			f.reload_t = 0.0
+			f.missiles += 1
+			if f.erect_t < 0.0:
+				_tel_sprite(f, 0)
+			gw.fx.spawn("build_spark", f.center_px(), 6)
+	elif f.missiles < 2 and f.erect_t < 0.0 and (f.queued.is_empty() or f.missiles == 0):
 
-				while not f.queued.is_empty() and ( not strike_worth(f.queued[0], f.country_id)\
-				or (gw.ai != null and gw.ai.get("sense") != null and gw.ai.sense.aim_veto(f.country_id, f.queued[0], "missile") != "")):
-					f.queued.pop_front()
-					stale_drop += 1
-			if not f.queued.is_empty() and f.missiles > 0:
-				f.erect_t = 0.0
-			continue
-		f.erect_t += dt
-		_tel_sprite(f, mini(6, 1 + int(f.erect_t / ERECT_TIME * 6.0)))
-		if f.erect_t >= ERECT_TIME:
-			if f.queued.is_empty():
-				f.erect_t = -1.0
-				_tel_sprite(f, 0)
-				continue
-			var tq: Vector2 = f.queued.pop_front()
-			if gw.diplo != null and gw.diplo.strike_block_at(f.country_id, tq) != "":
-				f.erect_t = -1.0
-				_tel_sprite(f, 0)
-				continue
-			_fire(f, tq)
+		if c.missile_stock[MT_BALLISTIC] > 0:
+			c.missile_stock[MT_BALLISTIC] -= 1
+			f.reload_t = TEL_RELOAD
+			f.warned_empty = false
+		elif f.missiles == 0 and c.is_player and not f.warned_empty:
+			f.warned_empty = true
+			gw.say(c, Loc.mk("ОТРК пуст: нужны баллистические ракеты с ракетного завода"))
+
+	if f.erect_t < 0.0:
+		if not f.queued.is_empty() and f.missiles > 0 and not c.is_player:
+
+			while not f.queued.is_empty() and ( not strike_worth(f.queued[0], f.country_id)\
+			or (gw.ai != null and gw.ai.get("sense") != null and gw.ai.sense.aim_veto(f.country_id, f.queued[0], "missile") != "")):
+				f.queued.pop_front()
+				stale_drop += 1
+		if not f.queued.is_empty() and f.missiles > 0:
+			f.erect_t = 0.0
+		return
+	f.erect_t += dt
+	_tel_sprite(f, mini(6, 1 + int(f.erect_t / ERECT_TIME * 6.0)))
+	if f.erect_t >= ERECT_TIME:
+		if f.queued.is_empty():
+			f.erect_t = -1.0
+			_tel_sprite(f, 0)
+			return
+		var tq: Vector2 = f.queued.pop_front()
+		if gw.diplo != null and gw.diplo.strike_block_at(f.country_id, tq) != "":
+			f.erect_t = -1.0
+			_tel_sprite(f, 0)
+			return
+		_fire(f, tq)
+# <<< PERF_PATCH_V2
 
 
 func can_halt(f: Facility) -> bool:

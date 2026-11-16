@@ -66,6 +66,10 @@ var _sea: PackedVector3Array = PackedVector3Array()
 var _pid: int = -1
 var _allies: bool = false
 var _t: float = 0.0
+# >>> PERF_PATCH_V2: _sync (полный проход facilities) не чаще SYNC_DT реальных секунд
+const SYNC_DT: float = 0.25
+var _sync_t: float = 0.0
+# <<< PERF_PATCH_V2
 var _stamps: Dictionary = {}
 var _done: Dictionary = {}
 var _news_q: Array = []
@@ -314,7 +318,12 @@ func update(delta: float) -> void :
 		_t = DT
 		_recompute()
 	else:
-		_sync()
+		# >>> PERF_PATCH_V2: полный проход facilities раз в SYNC_DT вместо каждого кадра
+		_sync_t -= delta
+		if _sync_t <= 0.0:
+			_sync_t = SYNC_DT
+			_sync()
+		# <<< PERF_PATCH_V2
 	_news(delta)
 
 

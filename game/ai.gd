@@ -338,13 +338,10 @@ func _take_neutral(c: Country) -> void :
 			var o: int = gw.data.get_owner_id(p.x, p.y)
 			if o != 0 and o != c.id:
 				continue
-			var close: bool = false
-			for oc: City in gw.cities:
-				if absi(oc.center.x - p.x) + absi(oc.center.y - p.y) < GameWorld.MIN_CITY_DIST:
-					close = true
-					break
-			if close or not _site_free(c, p):
+			# >>> PERF_PATCH_V2: O(1) близость города вместо скана всех городов
+			if _city_close_to(p) or not _site_free(c, p):
 				continue
+			# <<< PERF_PATCH_V2
 			if gw.cad344 != null and not gw.cad344.plan_free(p, City.Kind.TOWN):
 				_take_t[c.id] = now
 				gw.cad344.take_cont[c.id] = true
@@ -2575,6 +2572,41 @@ func _buy_missing(c: Country, cost: Dictionary, reserve: int) -> bool:
 
 
 
+# >>> PERF_PATCH_V2: coarse-grid центров городов — O(1) проверка близости
+# вместо O(cities) скана на каждого кандидата (источник спайков до ~400 мс)
+const CITY_CLOSE_CELL: int = GameWorld.MIN_CITY_DIST
+const EXP_CAND_CAP: int = 256
+var _cc_cells: Dictionary = {}
+var _cc_cities_n: int = -1
+
+func _city_close() -> Dictionary:
+	if _cc_cities_n != gw.cities.size():
+		_cc_cities_n = gw.cities.size()
+		var cg: int = CITY_CLOSE_CELL
+		var cells: Dictionary = {}
+		for oc: City in gw.cities:
+			var ck: Vector2i = Vector2i(floori(float(oc.center.x) / float(cg)), floori(float(oc.center.y) / float(cg)))
+			var arr: Array = cells.get(ck, [])
+			if arr.is_empty():
+				cells[ck] = arr
+			arr.append(oc.center)
+		_cc_cells = cells
+	return _cc_cells
+
+func _city_close_to(q: Vector2i) -> bool:
+	var cg: int = CITY_CLOSE_CELL
+	var cells: Dictionary = _city_close()
+	var ck: Vector2i = Vector2i(floori(float(q.x) / float(cg)), floori(float(q.y) / float(cg)))
+	for oy in range(-1, 2):
+		for ox in range(-1, 2):
+			var arr: Array = cells.get(Vector2i(ck.x + ox, ck.y + oy), [])
+			for c0: Vector2i in arr:
+				if absi(c0.x - q.x) + absi(c0.y - q.y) < GameWorld.MIN_CITY_DIST:
+					return true
+	return false
+# <<< PERF_PATCH_V2
+
+
 func _expand(c: Country) -> bool:
 	var d: WorldData = gw.data
 	var cands: Array = []
@@ -2602,18 +2634,19 @@ func _expand(c: Country) -> bool:
 				own8 += 1
 		cd0[0] = float(cd0[0]) + EXP_HOLE * float(own8)
 	cands.sort_custom( func(x: Array, y: Array) -> bool: return float(x[0]) > float(y[0]))
+	# >>> PERF_PATCH_V2: дорогие проверки сайтов только для лучших EXP_CAND_CAP кандидатов
+	if cands.size() > EXP_CAND_CAP:
+		cands.resize(EXP_CAND_CAP)
+	# <<< PERF_PATCH_V2
 	var tries: int = 0
 	for cd: Array in cands:
 		var q: Vector2i = cd[1]
 		if not d.inside(q.x, q.y) or not Biome.is_natural_land(d.get_biome(q.x, q.y)) or d.get_owner_id(q.x, q.y) != 0:
 			continue
-		var close: bool = false
-		for oc: City in gw.cities:
-			if absi(oc.center.x - q.x) + absi(oc.center.y - q.y) < GameWorld.MIN_CITY_DIST:
-				close = true
-				break
-		if close:
+		# >>> PERF_PATCH_V2: O(1) близость города вместо скана всех городов
+		if _city_close_to(q):
 			continue
+		# <<< PERF_PATCH_V2
 
 		tries += 1
 		if tries > EXPAND_TRIES:
