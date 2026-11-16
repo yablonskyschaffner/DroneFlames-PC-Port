@@ -1,0 +1,53 @@
+name: Script Check & Sim Bench
+
+# Быстрая проверка PR/push: загрузка проекта (ловит ошибки парсинга GDScript)
+# и 60-секундный headless прогон симуляции (ловит runtime-ошибки в системах).
+# Не влияет на релизный build.yml.
+
+on:
+  push:
+    branches: [ "master", "test" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  script-check:
+    name: Load check + sim bench (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot 4.7.2 headless
+        run: |
+          mkdir -p godot_bin
+          curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
+            "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip" \
+            -o godot_bin/godot.zip
+          unzip -q godot_bin/godot.zip -d godot_bin
+          chmod +x godot_bin/Godot_v4.7.2-stable_linux.x86_64
+
+      - name: Load check (parse/compile errors)
+        timeout-minutes: 5
+        run: |
+          ./godot_bin/Godot_v4.7.2-stable_linux.x86_64 --headless --path . --quit 2>&1 | tee load_check.log
+          if grep -qiE "SCRIPT ERROR|Parse Error" load_check.log; then
+            echo "::error::Script errors detected on project load"
+            exit 1
+          fi
+
+      - name: Sim bench smoke (60 s headless, perf_sys by system)
+        timeout-minutes: 6
+        env:
+          BENCH_UNITS: "60"
+          BENCH_HOME: "1"
+        run: |
+          ./godot_bin/Godot_v4.7.2-stable_linux.x86_64 --headless --path . -- --bench 2>&1 | tee bench.log
+          if ! grep -q "\[BENCH\] done" bench.log; then
+            echo "::error::Bench did not complete (crash or hang in sim systems)"
+            grep -E "SCRIPT ERROR|ERROR" bench.log || true
+            exit 1
+          fi
+          grep -E "\[BENCH\] game=" bench.log || true
